@@ -2,14 +2,19 @@ import streamlit as st
 from moviepy.editor import VideoFileClip, AudioFileClip
 from google.cloud import speech
 import os
-import openai
+from dotenv import load_dotenv
+from openai import OpenAI
 from google.cloud import texttospeech
 import tempfile
 from google.oauth2 import service_account
+from pydub import AudioSegment
+
+load_dotenv()
 
 def transcribe_audio(audio_file):
-    credentials = service_account.Credentials.from_service_account_file("/home/ayu/Downloads/voice-audio-cleaner-01-dec540223d7b.json")
+    credentials = service_account.Credentials.from_service_account_file(os.environ.get("PATH_TO_GOOGLE_API"))
     client = speech.SpeechClient(credentials=credentials)
+    
     
     with open(audio_file, "rb") as audio:
         content = audio.read()
@@ -26,26 +31,33 @@ def transcribe_audio(audio_file):
     transcript = ""
     for result in response.results:
         transcript += result.alternatives[0].transcript + " "
-    
+
+    print("The transcript is : " + transcript)
     return transcript
 
 
 def process_video(video_file):
     # Extract audio
     audio_file = extract_audio(video_file)
+    print("Audio Extracted")
     
     # Transcribe
     transcript = transcribe_audio(audio_file)
-    
+
+    print("Audio Transcribed")
 
     
     # Correct transcription
     corrected_text = correct_transcription(transcript)
+    print("TEXT Transcribed")
+
     
     # Synthesize new audio
     new_audio_file = synthesize_audio(corrected_text)
+    print("TEXT to AUDIO")
 
-    return "/home/ayu/Downloads/Replace your UMMs & AHHs with this....mp4"
+    # return "HELLO WORLD"
+    # return "/home/ayu/Downloads/Replace your UMMs & AHHs with this....mp4"
 
     
     # Replace old audio with new audio in the video
@@ -70,7 +82,7 @@ def replace_audio_in_video(video_file, new_audio_file):
 
 
 def synthesize_audio(text):
-    credentials = service_account.Credentials.from_service_account_file("/home/ayu/Downloads/voice-audio-cleaner-01-dec540223d7b.json")
+    credentials = service_account.Credentials.from_service_account_file(os.environ.get("PATH_TO_GOOGLE_API"))
     client = texttospeech.TextToSpeechClient()
     input_text = texttospeech.SynthesisInput(text=text)
     
@@ -87,42 +99,28 @@ def synthesize_audio(text):
 
 
 def correct_transcription(transcript):
-    openai.api_key = os.getenv("AZURE_OPENAI_KEY")
+    # Create an instance of the OpenAI client
+    client = OpenAI(api_key=os.environ.get("AZURE_OPENAI_KEY"))
 
-    response = openai.Completion.create(
-        engine="gpt-4o",
-        prompt=f"Correct the following text for grammar and remove filler words like 'umm' and 'hmm': {transcript}",
-        max_tokens=500
+    # Prepare the request to correct the transcription
+    chat_completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a helpful assistant that corrects grammar and removes filler words."
+            },
+            {
+                "role": "user",
+                "content": f"Correct the following text for grammar and remove filler words like 'umm' and 'hmm': {transcript}"
+            }
+        ],
+        model="gpt-4", 
     )
-    
-    corrected_text = response.choices[0].text.strip()
+
+    # Extract the corrected text from the response
+    corrected_text = chat_completion['choices'][0]['message']['content'].strip()
     return corrected_text
 
-
-# def transcribe_audio(audio_file):
-#     client = speech.SpeechClient()
-    
-#     with open(audio_file, "rb") as audio:
-#         content = audio.read()
-
-#     audio_data = speech.RecognitionAudio(content=content)
-#      # Set up the configuration (you can add more settings if needed)
-#     config = speech.RecognitionConfig(
-#         language_code="en-US",
-#         enable_automatic_punctuation=True  # Optional: To add punctuation in the transcript
-#     )
-
-#     try:
-#         response = client.recognize(config=config, audio=audio_data)
-#     except Exception as e:
-#         print(f"Error during recognition: {e}")
-#         return None
-
-#     transcript = ""
-#     for result in response.results:
-#         transcript += result.alternatives[0].transcript + " "
-    
-#     return transcript
 
 
 def extract_audio(video_file):
@@ -137,9 +135,14 @@ def extract_audio(video_file):
     
     # Extract audio and save to file
     clip.audio.write_audiofile(audio_path)
-    
-    return audio_path
 
+    # Convert stereo to mono using pydub
+    audio = AudioSegment.from_wav(audio_path)
+    audio = audio.set_channels(1)  # Convert to mono
+    mono_audio_path = "mono_audio.wav"
+    audio.export(mono_audio_path, format="wav")
+
+    return mono_audio_path
 
 def upload_video():
     video_file = st.file_uploader("Upload a video", type=["mp4", "mov", "avi"])
