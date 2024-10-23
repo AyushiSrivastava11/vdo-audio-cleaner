@@ -8,11 +8,22 @@ from google.cloud import texttospeech
 import tempfile
 from google.oauth2 import service_account
 from pydub import AudioSegment
+import json
+import requests
 
 load_dotenv()
 
+
+# This function transcribes the audio (Basically turns the audio into text)
 def transcribe_audio(audio_file):
-    credentials = service_account.Credentials.from_service_account_file(os.environ.get("PATH_TO_GOOGLE_API"))
+    
+    credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+
+    if not credentials_path:
+        raise ValueError("Google Cloud credentials file path is not set in .env")
+
+    credentials = service_account.Credentials.from_service_account_file(credentials_path)
+
     client = speech.SpeechClient(credentials=credentials)
     
     
@@ -22,11 +33,9 @@ def transcribe_audio(audio_file):
     audio_data = speech.RecognitionAudio(content=content)
     config = speech.RecognitionConfig(language_code="en-US", enable_automatic_punctuation=True)
 
-    # Use long-running recognize to handle larger files
     operation = client.long_running_recognize(config=config, audio=audio_data)
 
-    # Wait for the operation to complete
-    response = operation.result(timeout=600)  # Wait for up to 10 minutes
+    response = operation.result(timeout=600)  
 
     transcript = ""
     for result in response.results:
@@ -35,34 +44,16 @@ def transcribe_audio(audio_file):
     print("The transcript is : " + transcript)
     return transcript
 
-
+# This is the Processing function that calls the other crucial functions
 def process_video(video_file):
-    # Extract audio
+   
     audio_file = extract_audio(video_file)
-    print("Audio Extracted")
-    
-    # Transcribe
     transcript = transcribe_audio(audio_file)
-
-    print("Audio Transcribed")
-
-    
-    # Correct transcription
     corrected_text = correct_transcription(transcript)
-    print("TEXT Transcribed")
-
-    
-    # Synthesize new audio
+    if not corrected_text or corrected_text.strip() == "":
+        raise ValueError("Corrected text is empty. Cannot synthesize audio.")
     new_audio_file = synthesize_audio(corrected_text)
-    print("TEXT to AUDIO")
-
-    # return "HELLO WORLD"
-    # return "/home/ayu/Downloads/Replace your UMMs & AHHs with this....mp4"
-
-    
-    # Replace old audio with new audio in the video
     output_video_path = replace_audio_in_video(video_file, new_audio_file)
-    
     return output_video_path
 
 
@@ -82,8 +73,15 @@ def replace_audio_in_video(video_file, new_audio_file):
 
 
 def synthesize_audio(text):
-    credentials = service_account.Credentials.from_service_account_file(os.environ.get("PATH_TO_GOOGLE_API"))
-    client = texttospeech.TextToSpeechClient()
+    credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+
+    if not credentials_path:
+        raise ValueError("Google Cloud credentials file path is not set in .env")
+
+    credentials = service_account.Credentials.from_service_account_file(credentials_path)
+
+    client = texttospeech.TextToSpeechClient(credentials=credentials)
+    
     input_text = texttospeech.SynthesisInput(text=text)
     
     voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Standard-J")
@@ -99,46 +97,55 @@ def synthesize_audio(text):
 
 
 def correct_transcription(transcript):
-    # Create an instance of the OpenAI client
-    client = OpenAI(api_key=os.environ.get("AZURE_OPENAI_KEY"))
+        
+    azure_openai_key = os.environ.get("AZURE_OPENAI_KEY")
+    azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
 
-    # Prepare the request to correct the transcription
-    chat_completion = client.chat.completions.create(
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a helpful assistant that corrects grammar and removes filler words."
-            },
-            {
-                "role": "user",
-                "content": f"Correct the following text for grammar and remove filler words like 'umm' and 'hmm': {transcript}"
+    if azure_openai_key and azure_openai_endpoint:
+        try:
+            headers = {
+                "Content-Type": "application/json", 
+                "api-key": azure_openai_key  
             }
-        ],
-        model="gpt-4", 
-    )
+            
+            data = {
+                "messages": [{
+                    "role": "user", 
+                    "content": f"Correct the following text for grammar and remove filler words like 'umm' and 'hmm': {transcript}" 
+                    }],  
+                "max_tokens": 100  
+            }
+            
+            response = requests.post(azure_openai_endpoint, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                result = response.json()  
+                corrected_text = result["choices"][0]["message"]["content"].strip()
 
-    # Extract the corrected text from the response
-    corrected_text = chat_completion['choices'][0]['message']['content'].strip()
-    return corrected_text
+                print(corrected_text)
+
+                return corrected_text
+            else:
+                print(f"Failed to connect or retrieve response: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"Failed to connect or retrieve response: {str(e)}")
+    else:
+        print("Please enter all the required details.")
 
 
 
 def extract_audio(video_file):
-    # Create a temporary file to save the uploaded video
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
         temp_video.write(video_file.read())
         temp_video_path = temp_video.name
 
-    # Load the video file from the temp path
     clip = VideoFileClip(temp_video_path)
     audio_path = "temp_audio.wav"
     
-    # Extract audio and save to file
     clip.audio.write_audiofile(audio_path)
 
-    # Convert stereo to mono using pydub
     audio = AudioSegment.from_wav(audio_path)
-    audio = audio.set_channels(1)  # Convert to mono
+    audio = audio.set_channels(1)  
     mono_audio_path = "mono_audio.wav"
     audio.export(mono_audio_path, format="wav")
 
@@ -152,16 +159,13 @@ def upload_video():
 def main():
     st.title("AI Video Audio Replacement")
     
-    # Step 1: Upload a video file
     video_file = upload_video()
 
     if video_file:
         st.write("Processing Video...")
         
-        # Step 2: Process the video (transcribe, correct, synthesize, replace audio)
         output_video_path = process_video(video_file)
         
-        # Step 3: Play or download the result
         if output_video_path:
             st.video(output_video_path)
             st.download_button(label="Download Video", data=open(output_video_path, 'rb'), file_name="processed_video.mp4")
